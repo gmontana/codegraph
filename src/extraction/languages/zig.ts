@@ -304,6 +304,20 @@ export const zigExtractor: LanguageExtractor = {
   getVisibility: (node) => (hasPub(node) ? 'public' : 'private'),
   isExported: (node) => hasPub(node),
 
+  // Mark FFI / external-ABI functions (`export fn`, `extern fn`, `fn …
+  // callconv(.c)`) so reachability analysis treats them as external entry
+  // points (live by definition), not dead code with no in-repo callers.
+  extractModifiers: (node) => {
+    if (node.type !== 'function_declaration') return undefined;
+    const mods: string[] = [];
+    for (let i = 0; i < node.childCount; i++) {
+      const t = node.child(i)?.type;
+      if (t === 'export' || t === 'extern') mods.push(t);
+    }
+    if (node.namedChildren.some((c) => c.type === 'calling_convention')) mods.push('callconv');
+    return mods.length ? mods : undefined;
+  },
+
   visitNode: (node: SyntaxNode, ctx: ExtractorContext): boolean => {
     if (node.type === 'variable_declaration') return visitVarDecl(node, ctx);
     if (node.type === 'function_declaration') return visitFnDecl(node, ctx);
