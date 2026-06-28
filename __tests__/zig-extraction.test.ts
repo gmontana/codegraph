@@ -125,3 +125,32 @@ describe('Zig import mappings (cross-file resolution)', () => {
     expect(maps.find((m) => m.localName === 'std')).toBeDefined();
   });
 });
+
+describe('Zig generic-type factories', () => {
+  // `fn List(T) type { return struct {...} }` — Zig's generic types are
+  // functions returning an anonymous container.
+  const FACTORY = `
+pub fn List(comptime T: type) type {
+    return struct {
+        items: []T,
+        pub fn append(self: *@This(), x: T) void { _ = self; _ = x; }
+        pub fn clear(self: *@This()) void { _ = self; }
+    };
+}`;
+  let nodes: { kind: string; name: string; qualifiedName?: string }[];
+  beforeAll(() => {
+    nodes = extractFromSource('list.zig', FACTORY, 'zig').nodes;
+  });
+
+  it('indexes the factory as a struct named for the function', () => {
+    expect(nodes.find((n) => n.kind === 'struct' && n.name === 'List')).toBeDefined();
+  });
+
+  it('indexes the returned container declarations as methods of that type', () => {
+    const append = nodes.find((n) => n.kind === 'method' && n.name === 'append');
+    expect(append).toBeDefined();
+    expect(append!.qualifiedName).toContain('List');
+    expect(nodes.find((n) => n.kind === 'method' && n.name === 'clear')).toBeDefined();
+    expect(nodes.find((n) => n.kind === 'field' && n.name === 'items')).toBeDefined();
+  });
+});

@@ -236,6 +236,40 @@ function visitTest(node: SyntaxNode, ctx: ExtractorContext): boolean {
   return true;
 }
 
+/** A type factory `fn Name(...) type { return struct {...}; }` — return the
+ *  container the function produces, or null if it isn't one. Only a direct
+ *  `return` statement is considered; nested scopes (the container's own methods)
+ *  are not searched. A returned `struct {...}` is a type DEFINITION
+ *  (struct_declaration); a returned `.{...}` value is not, so plain functions
+ *  are never mistaken for factories. */
+function returnedContainer(fnNode: SyntaxNode): SyntaxNode | null {
+  const body = getChildByField(fnNode, 'body');
+  if (!body) return null;
+  for (const stmt of body.namedChildren) {
+    const ret = stmt.type === 'return_expression'
+      ? stmt
+      : stmt.namedChildren.find((c: SyntaxNode) => c.type === 'return_expression');
+    const val = ret?.namedChildren[0];
+    if (val && CONTAINER_KINDS.has(val.type)) return val;
+  }
+  return null;
+}
+
+/** Zig generic types ARE functions returning an anonymous container
+ *  (`fn List(comptime T: type) type { return struct {...}; }` — the ArrayList
+ *  idiom). Index such a factory as the type it yields: a struct/enum named for
+ *  the function, with the container's declarations as methods, so `List.append`
+ *  navigates like any other type. A normal function returns false and falls
+ *  through to the core ladder unchanged. */
+function visitFnDecl(node: SyntaxNode, ctx: ExtractorContext): boolean {
+  const container = returnedContainer(node);
+  if (!container) return false;
+  const nameNode = getChildByField(node, 'name');
+  if (!nameNode) return false;
+  extractContainer(node, container, getNodeText(nameNode, ctx.source), ctx);
+  return true;
+}
+
 export const zigExtractor: LanguageExtractor = {
   // function_declaration is BOTH the free-function and the method node type;
   // the ladder picks method when it fires inside a pushed container scope.
@@ -272,7 +306,9 @@ export const zigExtractor: LanguageExtractor = {
 
   visitNode: (node: SyntaxNode, ctx: ExtractorContext): boolean => {
     if (node.type === 'variable_declaration') return visitVarDecl(node, ctx);
+    if (node.type === 'function_declaration') return visitFnDecl(node, ctx);
     if (node.type === 'test_declaration') return visitTest(node, ctx);
     return false;
   },
+
 };
