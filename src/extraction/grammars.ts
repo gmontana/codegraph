@@ -25,8 +25,10 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   go: 'tree-sitter-go.wasm',
   rust: 'tree-sitter-rust.wasm',
   // Vendored: built from tree-sitter-zig patched for Zig 0.16 (asm-clobbers
-  // struct literal, de-keyworded async family, error-set field types) — not
-  // published in tree-sitter-wasms. 99.82% std-lib parse coverage.
+  // struct, de-keyworded async/await/suspend/resume, error-set field types,
+  // reserved-word block labels, conditional slice/pointer element types) — not
+  // in tree-sitter-wasms. 100% parse across std, Zing, ghostty, TigerBeetle,
+  // libxev, http.zig.
   zig: 'tree-sitter-zig.wasm',
   java: 'tree-sitter-java.wasm',
   c: 'tree-sitter-c.wasm',
