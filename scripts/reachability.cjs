@@ -77,7 +77,10 @@ function bfs(roots) {
 // pub API (in a Zig library the pub surface IS the contract — consumers and
 // tests reach the implementation through it, so it's live by definition).
 const isPub = (n) => n.is_exported || n.visibility === 'public' || ffi(n);
-const prodRoots = nodes.filter((n) => !isTest(n) && !isTool(n) && (n.name === 'main' || isPub(n))).map((n) => n.id);
+// build.zig's `build()` is the package's build entry (invoked by `zig build`),
+// so it's a production root and never an API-cleanup lead despite 0 in-repo callers.
+const isBuildEntry = (n) => /(^|\/)build\.zig$/.test(n.file_path);
+const prodRoots = nodes.filter((n) => !isTest(n) && !isTool(n) && (n.name === 'main' || isPub(n) || isBuildEntry(n))).map((n) => n.id);
 const testRoots = nodes.filter((n) => n.signature === 'test').map((n) => n.id);
 const toolRoots = nodes.filter((n) => isTool(n)).map((n) => n.id);
 
@@ -100,7 +103,7 @@ const incoming = new Map();
 for (const e of db.prepare(`SELECT target, COUNT(*) c FROM edges WHERE kind IN ('calls','references','instantiates') GROUP BY target`).all()) {
   incoming.set(e.target, e.c);
 }
-const exportedNoUsers = nodes.filter((n) => isPub(n) && !ffi(n) && n.name !== 'main' && !(incoming.get(n.id) > 0) && !isTest(n) && !isTool(n));
+const exportedNoUsers = nodes.filter((n) => isPub(n) && !ffi(n) && n.name !== 'main' && !(incoming.get(n.id) > 0) && !isTest(n) && !isTool(n) && !isBuildEntry(n));
 
 console.log(`=== Reachability (${LANG}) — ${nodes.length} functions/methods ===`);
 console.log(`  roots: production=${prodRoots.length} (main+FFI+pub-API)  test=${testRoots.length}  tool=${toolRoots.length}\n`);

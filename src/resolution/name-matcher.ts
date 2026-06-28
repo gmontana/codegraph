@@ -314,8 +314,22 @@ export function matchFunctionRef(
       return null;
     }
     // Same-name overloads in one file are the same conceptual symbol; pick
-    // the first by position for determinism.
-    const target = sameFile.reduce((a, b) => (a.startLine <= b.startLine ? a : b));
+    // the first by position for determinism. But MANY distinct same-named
+    // functions in one file are NOT an overload family — e.g. Zig's inline-
+    // struct comparators (`struct { fn cmp(...) {} }.cmp`), several per file —
+    // so resolve to the definition nearest AT-OR-ABOVE the reference (its
+    // lexical scope) instead of always the first. Gated to >2 same-file
+    // candidates so the common overload case is unchanged.
+    let target: typeof sameFile[number];
+    if (sameFile.length > 2 && ref.line) {
+      const above = sameFile.filter((n) => n.startLine <= ref.line!);
+      target =
+        above.length > 0
+          ? above.reduce((a, b) => (a.startLine >= b.startLine ? a : b))
+          : sameFile.reduce((a, b) => (a.startLine <= b.startLine ? a : b));
+    } else {
+      target = sameFile.reduce((a, b) => (a.startLine <= b.startLine ? a : b));
+    }
     return {
       original: ref,
       targetNodeId: target.id,
