@@ -71,6 +71,7 @@ export const LANGUAGES = [
   'python',
   'go',
   'rust',
+  'zig',
   'java',
   'c',
   'cpp',
