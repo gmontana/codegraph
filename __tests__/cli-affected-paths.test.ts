@@ -43,6 +43,11 @@ describe('codegraph affected — input path normalization (#825)', () => {
       path.join(tempDir, 'src/helper.test.ts'),
       "import { helper } from './helper';\ntest('t', () => helper());\n",
     );
+    fs.mkdirSync(path.join(tempDir, 'tests'));
+    fs.writeFileSync(
+      path.join(tempDir, 'tests/integration.ts'),
+      "import { util } from '../src/util';\ntest('integration', () => util(1));\n",
+    );
     const cg = CodeGraph.initSync(tempDir);
     await cg.indexAll();
     cg.close();
@@ -53,7 +58,7 @@ describe('codegraph affected — input path normalization (#825)', () => {
   });
 
   it('bare-relative, ./-prefixed, and absolute paths all resolve the same affected test', () => {
-    const expected = ['src/helper.test.ts'];
+    const expected = ['src/helper.test.ts', 'tests/integration.ts'];
     // Baseline that always worked.
     expect(affected(tempDir, 'src/util.ts')).toEqual(expected);
     // Both of these returned [] before the normalization fix.

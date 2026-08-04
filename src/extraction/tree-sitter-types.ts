@@ -168,6 +168,8 @@ export interface LanguageExtractor {
    * implementations across source sets.
    */
   extractModifiers?: (node: SyntaxNode) => string[] | undefined;
+  /** Extract declared generic/comptime type parameter names. */
+  getTypeParameters?: (node: SyntaxNode, source: string) => string[] | undefined;
 
   // --- New config properties ---
 
@@ -240,6 +242,12 @@ export interface LanguageExtractor {
    * Returns info about each declared variable, allowing the core to create nodes.
    */
   extractVariables?: (node: SyntaxNode, source: string) => VariableInfo[];
+
+  /**
+   * Extract grammar-specific references from a declaration or body node. The
+   * core supplies the owning symbol so hooks never need extractor internals.
+   */
+  extractReferences?: (node: SyntaxNode, ownerId: string, ctx: ExtractorContext) => void;
 
   /**
    * Extract receiver/owner type name from a method declaration.

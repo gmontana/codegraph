@@ -1578,6 +1578,7 @@ export class TreeSitterExtractor {
     const isAsync = this.extractor.isAsync?.(node);
     const isStatic = this.extractor.isStatic?.(node);
     const returnType = this.extractor.getReturnType?.(node, this.source);
+    const typeParameters = this.extractor.getTypeParameters?.(node, this.source);
 
     const funcNode = this.createNode('function', name, node, {
       docstring,
@@ -1587,6 +1588,7 @@ export class TreeSitterExtractor {
       isAsync,
       isStatic,
       returnType,
+      typeParameters,
     });
     if (!funcNode) return;
 
@@ -1779,6 +1781,7 @@ export class TreeSitterExtractor {
     const isAsync = this.extractor.isAsync?.(node);
     const isStatic = this.extractor.isStatic?.(node);
     const returnType = this.extractor.getReturnType?.(node, this.source);
+    const typeParameters = this.extractor.getTypeParameters?.(node, this.source);
     const extraProps: Partial<Node> = {
       docstring,
       signature,
@@ -1786,6 +1789,7 @@ export class TreeSitterExtractor {
       isAsync,
       isStatic,
       returnType,
+      typeParameters,
     };
     if (receiverType) {
       extraProps.qualifiedName = this.composeReceiverQualifiedName(receiverType, name);
@@ -4406,6 +4410,19 @@ export class TreeSitterExtractor {
                 calleeName = methodName;
               }
             } else if (
+              this.language === 'zig' &&
+              receiver &&
+              (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(
+                getNodeText(func, this.source).replace(/\s+/g, '')
+              ) || /^@import\("[^"]+"\)(?:\.[A-Za-z_]\w*)+$/.test(
+                getNodeText(func, this.source).replace(/\s+/g, '')
+              ))
+            ) {
+              // Zig namespaces commonly chain through imported modules
+              // (`std.debug.print`, `root.net.send`). Keep the complete chain;
+              // reducing it to `print` fabricates ambiguous project matches.
+              calleeName = getNodeText(func, this.source).replace(/\s+/g, '');
+            } else if (
               (this.language === 'cpp' ||
                 this.language === 'c' ||
                 this.language === 'kotlin' ||
@@ -5136,6 +5153,11 @@ export class TreeSitterExtractor {
       // not in visitNode, so the capture hook must fire in both walkers.
       this.maybeCaptureFnRefs(node, nodeType);
 
+      const ownerId = this.nodeStack[this.nodeStack.length - 1];
+      if (ownerId && this.extractor!.extractReferences) {
+        this.extractor!.extractReferences(node, ownerId, this.makeExtractorContext());
+      }
+
       // Rocket route-registration macros (`routes![…]` / `catchers![…]`): the
       // handler paths live in a raw token tree the call walker can't see.
       if (nodeType === 'macro_invocation') this.extractRustRouteMacro(node);
@@ -5787,6 +5809,10 @@ export class TreeSitterExtractor {
    */
   private extractTypeAnnotations(node: SyntaxNode, nodeId: string): void {
     if (!this.extractor) return;
+    if (this.extractor.extractReferences) {
+      this.extractor.extractReferences(node, nodeId, this.makeExtractorContext());
+      return;
+    }
     if (!this.TYPE_ANNOTATION_LANGUAGES.has(this.language)) return;
 
     // C# tree-sitter doesn't produce `type_identifier` leaves — it uses

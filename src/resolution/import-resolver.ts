@@ -11,6 +11,7 @@ import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping, ReExport 
 import { applyAliases } from './path-aliases';
 import { resolveWorkspaceImport } from './workspace-packages';
 import {
+  inferLocalReceiverType,
   resolveMethodOnType,
   localReceiverTypePatterns,
   normalizeInferredTypeName,
@@ -67,6 +68,7 @@ export function isNixPathImportRef(ref: UnresolvedRef): boolean {
 // there, so the staleness discipline matches the resolver's own caches.
 const importPathMemos = new WeakMap<ResolutionContext, Map<string, string | null>>();
 const exportedSymbolMemos = new WeakMap<ResolutionContext, Map<string, Node | undefined>>();
+const zigModuleIndexes = new WeakMap<ResolutionContext, Map<string, string>>();
 
 /**
  * Per-file index of exported symbols, replacing repeated linear `.find`s over
@@ -106,8 +108,65 @@ export function clearImportResolverMemos(context: ResolutionContext): void {
   importPathMemos.delete(context);
   exportedSymbolMemos.delete(context);
   fileExportIndexes.delete(context);
+  zigModuleIndexes.delete(context);
   luaFileBasenameIndexes.delete(context);
   cobolCopybookIndexes.delete(context);
+}
+
+function resolveZigNamedModule(name: string, context: ResolutionContext): string | null {
+  let modules = zigModuleIndexes.get(context);
+  if (!modules) {
+    modules = new Map();
+    const candidates = new Map<string, Set<string>>();
+    const addCandidate = (moduleName: string, rawPath: string): void => {
+      const filePath = path.posix.normalize(rawPath);
+      const basename = path.posix.basename(filePath);
+      if (!context.getNodesByName(basename)
+        .some((node) => node.kind === 'file' && node.filePath === filePath)) return;
+      let paths = candidates.get(moduleName);
+      if (!paths) {
+        paths = new Set();
+        candidates.set(moduleName, paths);
+      }
+      paths.add(filePath);
+    };
+
+    const pending = ['build.zig'];
+    const seenBuildFiles = new Set<string>();
+    while (pending.length > 0) {
+      const buildPath = pending.pop()!;
+      if (seenBuildFiles.has(buildPath)) continue;
+      seenBuildFiles.add(buildPath);
+      const build = context.readFile(buildPath);
+      if (build === null) continue;
+      let match: RegExpExecArray | null;
+
+      const named = /\b\w+\.addModule\s*\(\s*"([^"]+)"\s*,\s*\.\{[^}]*?\.root_source_file\s*=\s*\w+\.path\s*\(\s*"([^"]+\.zig)"\s*\)/gs;
+      while ((match = named.exec(build)) !== null) addCandidate(match[1]!, match[2]!);
+
+      const variables = new Map<string, string>();
+      const created = /\bconst\s+(\w+)\s*=\s*\w+\.createModule\s*\(\s*\.\{[^}]*?\.root_source_file\s*=\s*\w+\.path\s*\(\s*"([^"]+\.zig)"\s*\)/gs;
+      while ((match = created.exec(build)) !== null) variables.set(match[1]!, match[2]!);
+
+      const attached = /\.addImport\s*\(\s*"([^"]+)"\s*,\s*(\w+)\s*\)/g;
+      while ((match = attached.exec(build)) !== null) {
+        const filePath = variables.get(match[2]!);
+        if (filePath) addCandidate(match[1]!, filePath);
+      }
+
+      const importedBuildFile = /@import\s*\(\s*"([^"]+\.zig)"\s*\)/g;
+      while ((match = importedBuildFile.exec(build)) !== null) {
+        const imported = path.posix.normalize(path.posix.join(path.posix.dirname(buildPath), match[1]!));
+        if (!imported.startsWith('../') && !path.posix.isAbsolute(imported)) pending.push(imported);
+      }
+    }
+
+    for (const [moduleName, paths] of candidates) {
+      if (paths.size === 1) modules.set(moduleName, paths.values().next().value!);
+    }
+    zigModuleIndexes.set(context, modules);
+  }
+  return modules.get(name) ?? null;
 }
 
 export function resolveImportPath(
@@ -149,7 +208,9 @@ function resolveImportPathUncached(
   // which the generic `.`-prefix check below would miss. A bare name (`std`,
   // `builtin`, a build.zig.zon package) names no project file → external.
   if (language === 'zig') {
-    if (!importPath.endsWith('.zig') && !importPath.startsWith('.')) return null;
+    if (!importPath.endsWith('.zig') && !importPath.startsWith('.')) {
+      return resolveZigNamedModule(importPath, context);
+    }
     const zigFromDir = path.dirname(path.join(context.getProjectRoot(), fromFile));
     return resolveRelativeImport(importPath, zigFromDir, language, context);
   }
@@ -1119,17 +1180,55 @@ function extractCppImports(content: string): ImportMapping[] {
  */
 function extractZigImports(content: string): ImportMapping[] {
   const mappings: ImportMapping[] = [];
-  const re = /\b(?:pub\s+)?const\s+(\w+)\s*=\s*@import\s*\(\s*"([^"]+)"\s*\)/g;
+  const byLocalName = new Map<string, ImportMapping>();
+  const re = /^(?:pub\s+)?const\s+(\w+)\s*=\s*@import\s*\(\s*"([^"]+)"\s*\)((?:\s*\.\s*[A-Za-z_]\w*)*)/gm;
   let match: RegExpExecArray | null;
   while ((match = re.exec(content)) !== null) {
-    const [, localName, source] = match;
-    mappings.push({
+    const [, localName, source, selection] = match;
+    const exportedName = selection?.replace(/\s+/g, '').replace(/^\./, '') || '*';
+    const mapping: ImportMapping = {
       localName: localName!,
-      exportedName: '*',
+      exportedName,
       source: source!,
       isDefault: false,
-      isNamespace: true,
+      isNamespace: exportedName === '*',
+    };
+    mappings.push(mapping);
+    byLocalName.set(mapping.localName, mapping);
+  }
+
+  // Zig APIs commonly rebind a member from an imported module before use:
+  // `const zing = @import("zing"); const compiler = zing.compiler;`.
+  // Propagate only exact top-level const aliases rooted in a known import;
+  // arbitrary value expressions and function locals never enter the map.
+  const aliases: Array<{ localName: string; base: string; selection: string }> = [];
+  const aliasRe = /^(?:pub\s+)?const\s+(\w+)\s*=\s*([A-Za-z_]\w*)((?:\s*\.\s*[A-Za-z_]\w*)+)\s*;/gm;
+  while ((match = aliasRe.exec(content)) !== null) {
+    aliases.push({
+      localName: match[1]!,
+      base: match[2]!,
+      selection: match[3]!.replace(/\s+/g, '').replace(/^\./, ''),
     });
+  }
+  for (let remaining = aliases.length; remaining > 0; remaining--) {
+    let changed = false;
+    for (const alias of aliases) {
+      if (byLocalName.has(alias.localName)) continue;
+      const base = byLocalName.get(alias.base);
+      if (!base) continue;
+      const prefix = base.isNamespace ? '' : `${base.exportedName}.`;
+      const mapping: ImportMapping = {
+        localName: alias.localName,
+        exportedName: `${prefix}${alias.selection}`,
+        source: base.source,
+        isDefault: false,
+        isNamespace: false,
+      };
+      mappings.push(mapping);
+      byLocalName.set(mapping.localName, mapping);
+      changed = true;
+    }
+    if (!changed) break;
   }
   return mappings;
 }
@@ -1344,10 +1443,96 @@ function pickClosestJvmCandidate(candidates: Node[], fromPath: string): Node {
   return best;
 }
 
+function resolveZigMemberPath(
+  filePath: string,
+  segments: string[],
+  context: ResolutionContext,
+  visited = new Set<string>(),
+): Node | null {
+  if (segments.length === 0 || visited.has(filePath) || visited.size >= 16) return null;
+  visited.add(filePath);
+
+  const [head, ...tail] = segments;
+  const direct = context
+    .getNodesByName(head!)
+    .find((node) => node.filePath === filePath && node.isExported);
+  if (direct) {
+    let current = direct;
+    let complete = true;
+    for (const member of tail) {
+      const next = context
+        .getNodesByQualifiedName(`${current.qualifiedName}::${member}`)
+        .find((node) => node.filePath === filePath);
+      if (!next) {
+        complete = false;
+        break;
+      }
+      current = next;
+    }
+    if (complete) return current;
+  }
+
+  const mapping = context
+    .getImportMappings(filePath, 'zig')
+    .find((candidate) => candidate.localName === head);
+  if (!mapping) return null;
+  const nextFile = resolveImportPath(mapping.source, filePath, 'zig', context);
+  if (!nextFile) return null;
+  const selected = mapping.isNamespace ? [] : mapping.exportedName.split('.');
+  return resolveZigMemberPath(nextFile, [...selected, ...tail], context, visited);
+}
+
+/**
+ * Resolve `value.member()` when `value` has a locally declared Zig type that
+ * itself came through an import (`const Context = api.Context; fn f(ctx:
+ * *Context) { ctx.run(); }`). The generic receiver matcher knows the local type
+ * name but cannot disambiguate same-named structs across files; the import map
+ * supplies that missing identity. Following the type and member as one Zig
+ * member path also crosses `pub const` re-export chains without guessing.
+ */
+function resolveZigTypedReceiver(
+  ref: UnresolvedRef,
+  imports: ImportMapping[],
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.language !== 'zig' || ref.referenceKind !== 'calls') return null;
+  const call = ref.referenceName.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+  if (!call) return null;
+
+  const typeName = inferLocalReceiverType(call[1]!, ref, context);
+  if (!typeName) return null;
+  const [typeRoot, ...typeTail] = typeName.split('.');
+  const mapping = imports.find((candidate) => candidate.localName === typeRoot);
+  if (!mapping) return null;
+
+  const filePath = resolveImportPath(mapping.source, ref.filePath, 'zig', context);
+  if (!filePath) return null;
+  const selected = mapping.isNamespace ? [] : mapping.exportedName.split('.');
+  const target = resolveZigMemberPath(filePath, [...selected, ...typeTail, call[2]!], context);
+  if (!target || (target.kind !== 'method' && target.kind !== 'function')) return null;
+  return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'import' };
+}
+
+/** Resolve an inline Zig import such as `@import("types.zig").Tensor.init`. */
+function resolveZigDirectImport(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  if (ref.language !== 'zig') return null;
+  const match = ref.referenceName.match(/^@import\("([^"]+)"\)\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)$/);
+  if (!match) return null;
+  const filePath = resolveImportPath(match[1]!, ref.filePath, 'zig', context);
+  if (!filePath) return null;
+  const target = resolveZigMemberPath(filePath, match[2]!.split('.'), context);
+  return target
+    ? { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'import' }
+    : null;
+}
+
 export function resolveViaImport(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
+  const zigDirect = resolveZigDirectImport(ref, context);
+  if (zigDirect) return zigDirect;
+
   // C/C++ #include references — resolve directly to the included file
   // (file→file edge), bypassing symbol lookup. The extractor emits these
   // with `referenceKind: 'imports'` and `referenceName: <include path>`
@@ -1523,6 +1708,26 @@ export function resolveViaImport(
   if ((ref.language === 'lua' || ref.language === 'luau') && ref.referenceKind === 'imports') {
     const luaResult = resolveLuaRequire(ref, context);
     if (luaResult) return luaResult;
+  }
+
+  if (ref.language === 'zig') {
+    const receiver = resolveZigTypedReceiver(ref, imports, context);
+    if (receiver) return receiver;
+
+    for (const mapping of imports) {
+      if (mapping.localName !== ref.referenceName &&
+          !ref.referenceName.startsWith(`${mapping.localName}.`)) continue;
+      const filePath = resolveImportPath(mapping.source, ref.filePath, 'zig', context);
+      if (!filePath) continue;
+      const tail = ref.referenceName === mapping.localName
+        ? []
+        : ref.referenceName.slice(mapping.localName.length + 1).split('.');
+      const selected = mapping.isNamespace ? [] : mapping.exportedName.split('.');
+      const target = resolveZigMemberPath(filePath, [...selected, ...tail], context);
+      if (target) {
+        return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'import' };
+      }
+    }
   }
 
   // Whole-module / namespace imports → link the importing file to the module

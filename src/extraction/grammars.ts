@@ -83,6 +83,7 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.go': 'go',
   '.rs': 'rust',
   '.zig': 'zig',
+  '.zon': 'zig',
   '.java': 'java',
   '.c': 'c',
   '.h': 'c', // Could also be C++, defaulting to C

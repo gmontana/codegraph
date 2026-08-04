@@ -1240,6 +1240,17 @@ function buildLocalReceiverTypePatterns(language: Language, r: string): RegExp[]
         // parameter case the old `let`-anchored pattern excluded (#1125).
         new RegExp(`\\b${r}\\s*:\\s*&?(?:mut\\s+)?([A-Z][\\w]*)`), // lg: Logger  (binding or typed param)
       ];
+    case 'zig':
+      return [
+        // Typed local or parameter. Consume only Zig's known pointer/slice
+        // qualifiers, then capture the named child type. A broad `.*` prefix
+        // is tempting here but can cross into an unrelated token and silently
+        // infer the wrong receiver type.
+        new RegExp(`\\b${r}\\b\\s*:\\s*(?:(?:\\?|\\*|\\[[^\\]\\n]*\\])\\s*|(?:const|volatile|allowzero)\\s+|align\\s*\\([^\\n)]*\\)\\s*)*([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*)`),
+        new RegExp(`\\b${r}\\b\\s*=\\s*([A-Za-z_][\\w.]*)\\s*\\{`), // value = Type{ ... }
+        new RegExp(`\\b${r}\\b\\s*=\\s*([A-Za-z_][\\w.]*)\\s*\\([^;]*?\\)\\s*\\{`), // = Type(args){ ... }
+        new RegExp(`\\b${r}\\b\\s*=\\s*(?:try\\s+)?([A-Za-z_][\\w.]*)\\.\\w+\\s*\\(`), // = try Type.init(...)
+      ];
     case 'go':
       return [
         new RegExp(`\\b${r}\\b\\s*:=\\s*&?([A-Za-z_][\\w.]*)\\s*{`), // lg := Logger{} / &Logger{}
@@ -1357,7 +1368,7 @@ function enclosingScopeStartLine(ref: UnresolvedRef, context: ResolutionContext)
  * without patterns or when no declaration is found. Bounded to the enclosing
  * scope so a same-named variable in another function can't leak in.
  */
-function inferLocalReceiverType(
+export function inferLocalReceiverType(
   receiverName: string,
   ref: UnresolvedRef,
   context: ResolutionContext,
