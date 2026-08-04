@@ -22,6 +22,7 @@ import { ALL_TARGETS, getTarget, resolveTargetFlag } from '../src/installer/targ
 import { uninstallTargets, refreshTargets } from '../src/installer';
 import { upsertTomlTable, removeTomlTable, buildTomlTable } from '../src/installer/targets/toml';
 import { cleanupLegacyHooks, writePromptHookEntry, removePromptHookEntry } from '../src/installer/targets/claude';
+import { PI_EXTENSION_END, PI_EXTENSION_START } from '../src/installer/targets/pi';
 
 function mkTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`));
@@ -38,12 +39,14 @@ function setHome(dir: string): { restore: () => void } {
     APPDATA: process.env.APPDATA,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
     HERMES_HOME: process.env.HERMES_HOME,
+    PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
   };
   process.env.HOME = dir;
   process.env.USERPROFILE = dir;
   process.env.APPDATA = path.join(dir, '.config');
   process.env.XDG_CONFIG_HOME = path.join(dir, '.config');
   delete process.env.HERMES_HOME;
+  delete process.env.PI_CODING_AGENT_DIR;
   return {
     restore() {
       if (prev.HOME === undefined) delete process.env.HOME; else process.env.HOME = prev.HOME;
@@ -51,6 +54,7 @@ function setHome(dir: string): { restore: () => void } {
       if (prev.APPDATA === undefined) delete process.env.APPDATA; else process.env.APPDATA = prev.APPDATA;
       if (prev.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = prev.XDG_CONFIG_HOME;
       if (prev.HERMES_HOME === undefined) delete process.env.HERMES_HOME; else process.env.HERMES_HOME = prev.HERMES_HOME;
+      if (prev.PI_CODING_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev.PI_CODING_AGENT_DIR;
     },
   };
 }
@@ -343,6 +347,67 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(paths.some((p) => p.endsWith('/opencode.jsonc'))).toBe(true);
     expect(paths.some((p) => p.endsWith('/AGENTS.md'))).toBe(true);
     expect(fs.existsSync(path.join(process.cwd(), 'AGENTS.md'))).toBe(true);
+  });
+
+  it('pi: installs deterministic prompt front-loading and instructions', () => {
+    const pi = getTarget('pi')!;
+    const result = pi.install('global', { autoAllow: true });
+    const extension = path.join(tmpHome, '.pi', 'agent', 'extensions', 'codegraph-frontload.ts');
+    const agentsMd = path.join(tmpHome, '.pi', 'agent', 'AGENTS.md');
+
+    expect(result.files.map((f) => f.path)).toEqual([extension, agentsMd]);
+    const body = fs.readFileSync(extension, 'utf8');
+    expect(body).toContain(PI_EXTENSION_START);
+    expect(body).toContain(PI_EXTENSION_END);
+    expect(body).toContain('before_agent_start');
+    expect(body).toContain('["prompt-hook"]');
+    expect(body).not.toContain('mcpServers');
+    expect(fs.readFileSync(agentsMd, 'utf8')).toContain('codegraph explore');
+  });
+
+  it('pi: preserves an unmarked extension collision', () => {
+    const pi = getTarget('pi')!;
+    const extension = path.join(tmpHome, '.pi', 'agent', 'extensions', 'codegraph-frontload.ts');
+    fs.mkdirSync(path.dirname(extension), { recursive: true });
+    fs.writeFileSync(extension, '// user-owned extension\n');
+
+    const result = pi.install('global', { autoAllow: true });
+
+    expect(result.files[0].action).toBe('kept');
+    expect(fs.readFileSync(extension, 'utf8')).toBe('// user-owned extension\n');
+  });
+
+  it('pi: upgrades only its marked block and uninstall preserves surrounding code', () => {
+    const pi = getTarget('pi')!;
+    const extension = path.join(tmpHome, '.pi', 'agent', 'extensions', 'codegraph-frontload.ts');
+    fs.mkdirSync(path.dirname(extension), { recursive: true });
+    fs.writeFileSync(extension, [
+      '// user prelude',
+      PI_EXTENSION_START,
+      '// stale generated body',
+      PI_EXTENSION_END,
+      '// user epilogue',
+      '',
+    ].join('\n'));
+
+    expect(pi.install('global', { autoAllow: true }).files[0].action).toBe('updated');
+    const upgraded = fs.readFileSync(extension, 'utf8');
+    expect(upgraded).toContain('// user prelude');
+    expect(upgraded).toContain('before_agent_start');
+    expect(upgraded).toContain('// user epilogue');
+
+    expect(pi.uninstall('global').files[0].action).toBe('removed');
+    expect(fs.readFileSync(extension, 'utf8')).toBe('// user prelude\n\n// user epilogue\n');
+  });
+
+  it('pi: refuses to remove a malformed managed block', () => {
+    const pi = getTarget('pi')!;
+    const extension = path.join(tmpHome, '.pi', 'agent', 'extensions', 'codegraph-frontload.ts');
+    fs.mkdirSync(path.dirname(extension), { recursive: true });
+    fs.writeFileSync(extension, `${PI_EXTENSION_START}\n// missing end marker\n`);
+
+    expect(pi.uninstall('global').files[0].action).toBe('kept');
+    expect(fs.readFileSync(extension, 'utf8')).toContain('// missing end marker');
   });
 
   it('gemini: install writes settings.json (mcpServers.codegraph) and the GEMINI.md block (#704)', () => {
@@ -1268,6 +1333,7 @@ describe('Installer targets — registry', () => {
     expect(getTarget('gemini')?.id).toBe('gemini');
     expect(getTarget('antigravity')?.id).toBe('antigravity');
     expect(getTarget('kiro')?.id).toBe('kiro');
+    expect(getTarget('pi')?.id).toBe('pi');
     expect(getTarget('not-a-real-target')).toBeUndefined();
   });
 

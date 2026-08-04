@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { planFrontload, findIndexedSubprojectRoots, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens } from '../src/directory';
+import { planFrontload, findIndexedSubprojectRoots, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens, extractFilePaths } from '../src/directory';
 
 /** Make `dir` look indexed (isInitialized needs `.codegraph/codegraph.db`). */
 function mkIndexed(dir: string): string {
@@ -293,6 +293,23 @@ describe('extractCodeTokens — candidate symbols the hook verifies against the 
     expect(extractCodeTokens('fix the typo in README.md')).toEqual([]);   // doc filename excluded
     expect(extractCodeTokens('bump the version in package.json')).toEqual([]);
     expect(extractCodeTokens('water the flower')).toEqual([]);
+  });
+});
+
+describe('extractFilePaths — exact prompt-hook intent', () => {
+  it('extracts source paths from prose, quotes, and sentence endings', () => {
+    expect(extractFilePaths('read src/backends/fusion_catalog.zig.')).toEqual([
+      'src/backends/fusion_catalog.zig',
+    ]);
+    expect(extractFilePaths('compare `lib/auth/session.ts` with "lib/auth/token.ts"')).toEqual([
+      'lib/auth/session.ts',
+      'lib/auth/token.ts',
+    ]);
+  });
+
+  it('normalizes Windows separators and ignores bare prose/file-like words', () => {
+    expect(extractFilePaths('inspect src\\auth\\session.ts')).toEqual(['src/auth/session.ts']);
+    expect(extractFilePaths('README.md and JavaScript are not paths')).toEqual([]);
   });
 });
 

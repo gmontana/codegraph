@@ -497,6 +497,26 @@ export function extractCodeTokens(prompt: string): string[] {
 }
 
 /**
+ * File paths explicitly named in a prompt. These are stronger intent than a
+ * semantic query: when the user names `src/auth/session.ts`, the prompt hook
+ * should read that indexed file rather than hope exploration ranks it highly.
+ *
+ * Keep this lexical and conservative. Resolution and containment still happen
+ * inside `codegraph_node`; this function only extracts path-shaped candidates.
+ */
+export function extractFilePaths(prompt: string): string[] {
+  if (!prompt) return [];
+  const out = new Set<string>();
+  // A path must contain a slash and a leaf extension. Quotes/backticks and
+  // sentence punctuation are intentionally outside the captured group.
+  const pattern = /(?:^|[\s`"'(<\[])((?:\.{0,2}[\\/])?(?:[\w@.+-]+[\\/])+[\w@.+-]+\.[A-Za-z0-9]{1,12})/g;
+  for (const match of prompt.matchAll(pattern)) {
+    out.add(match[1]!.replace(/\\/g, '/'));
+  }
+  return [...out];
+}
+
+/**
  * Cheap, graph-free candidate gate for the front-load hook: could `prompt` be a
  * structural / flow / impact / "where-how" question worth front-loading context
  * for? True on an explicit keyword in any covered language (#994, #1126) OR an

@@ -40,7 +40,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens } from '../directory';
+import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens, extractFilePaths } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
@@ -1251,6 +1251,7 @@ program
       let input: { prompt?: string; cwd?: string } = {};
       try { input = JSON.parse(raw); } catch { return; }
       const prompt = String(input.prompt || '');
+      const filePaths = extractFilePaths(prompt);
 
       // Gate telemetry: how often each tier fires vs. no-ops — counter names
       // only, NEVER prompt content (see TELEMETRY.md). This is the data that
@@ -1275,7 +1276,7 @@ program
       const keyworded = hasStructuralKeyword(prompt);
       const codeTokens = keyworded ? [] : extractCodeTokens(prompt);
       const proseWords = keyworded ? [] : extractProseCandidates(prompt);
-      if (!keyworded && codeTokens.length === 0 && proseWords.length === 0) { gate('noop-shape'); return; }
+      if (!keyworded && codeTokens.length === 0 && proseWords.length === 0 && filePaths.length === 0) { gate('noop-shape'); return; }
 
       // Decide what to inject, shaped by WHERE the index(es) are: the nearest
       // indexed ancestor of cwd, or — when cwd is an un-indexed workspace root
@@ -1305,11 +1306,21 @@ program
           // must be real here — a brand name or prose about another domain
           // must not inject). Keyword-bearing prompts skip verification — the
           // keyword is signal enough.
+          const indexedPaths = new Set(cg.getFiles().map((f) => f.path.replace(/\\/g, '/').toLowerCase()));
+          const explicitFile = filePaths.find((candidate) => {
+            const wanted = candidate.replace(/^\.\//, '').toLowerCase();
+            return indexedPaths.has(wanted) || [...indexedPaths].some((p) => p.endsWith(`/${wanted}`));
+          });
           const tokenVerified = !keyworded && codeTokens.some((t) => cg.getNodesByName(t).length > 0);
-          if (keyworded || tokenVerified) {
+          if (keyworded || tokenVerified || explicitFile) {
             const { ToolHandler } = await import('../mcp/tools');
             const handler = new ToolHandler(cg);
-            const result = await handler.execute('codegraph_explore', { query: prompt });
+            // An explicit indexed path is exact user intent. Serve that file's
+            // current bytes and dependents directly; semantic exploration can
+            // otherwise rank a similarly named symbol above the requested file.
+            const result = explicitFile
+              ? await handler.execute('codegraph_node', { file: explicitFile })
+              : await handler.execute('codegraph_explore', { query: prompt });
             const text = result.content[0]?.text ?? '';
             if (!result.isError && text.trim()) {
               // Cap the injection so a large-repo explore can't flood the prompt.
@@ -1322,13 +1333,13 @@ program
               process.stdout.write(
                 `<codegraph_context note="Structural context from CodeGraph for this prompt — treat returned source as already read; ${more}.">\n${body}${others}\n</codegraph_context>\n`,
               );
-              gate(keyworded ? 'high-keyword' : 'high-token');
+              gate(explicitFile ? 'high-file' : keyworded ? 'high-keyword' : 'high-token');
             } else {
               // A high-* outcome must mean context was actually delivered —
               // the funnel's noop-vs-high split is how gate recall is
               // measured (#1143). An explore error or empty result is a
               // delivery failure, not a gate success.
-              gate(keyworded ? 'noop-explore-keyword' : 'noop-explore-token');
+              gate(explicitFile ? 'noop-file' : keyworded ? 'noop-explore-keyword' : 'noop-explore-token');
             }
             return;
           }
