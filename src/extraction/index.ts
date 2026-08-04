@@ -946,6 +946,13 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, em
       gitlinkRels.push(rel); // an unexpanded gitlink — recursed into below, not a source file itself
       continue;
     }
+    // `git ls-files` describes the index, so it also returns tracked files that
+    // are intentionally deleted in the working tree. A full index represents
+    // the checkout as it exists now: do not enqueue paths that cannot be read.
+    // Incremental sync already reports these paths as deletions and removes
+    // their old graph rows. The read step retains its ENOENT handling for the
+    // unavoidable race where a file disappears after this discovery pass.
+    if (!fs.existsSync(path.join(repoDir, rel))) continue;
     files.add(normalizePath(prefix + rel));
   }
 

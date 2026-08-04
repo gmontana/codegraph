@@ -6946,6 +6946,28 @@ describe('Directory Exclusion', () => {
     expect(files[0]).toBe('src/components/Button.tsx');
     expect(files[0]).not.toContain('\\');
   });
+
+  it('should omit tracked files deleted from the working tree', async () => {
+    const { execFileSync } = await import('child_process');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: tempDir, stdio: 'pipe' });
+
+    git('init', '-q');
+    git('config', 'user.email', 'test@test.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(tempDir, 'keep.ts'), 'export const keep = 1;');
+    fs.writeFileSync(path.join(tempDir, 'removed.ts'), 'export const removed = 1;');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'initial');
+    fs.rmSync(path.join(tempDir, 'removed.ts'));
+
+    expect(scanDirectory(tempDir)).toEqual(['keep.ts']);
+
+    const cg = CodeGraph.initSync(tempDir);
+    const result = await cg.indexAll();
+    expect(result.filesErrored).toBe(0);
+    expect(cg.getFiles().map((file) => file.path)).toEqual(['keep.ts']);
+    cg.close();
+  });
 });
 
 describe('Git Submodules', () => {
