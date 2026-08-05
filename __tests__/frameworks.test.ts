@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { FrameworkResolver, UnresolvedRef } from '../src/resolution/types';
 import type { Node } from '../src/types';
+import { getApplicableFrameworks } from '../src/resolution/frameworks';
 
 describe('FrameworkResolver.extract interface', () => {
   it('extract() returns { nodes, references }', () => {
@@ -18,9 +19,6 @@ describe('FrameworkResolver.extract interface', () => {
     expect(result).toEqual({ nodes: [], references: [] });
   });
 });
-
-import { getApplicableFrameworks } from '../src/resolution/frameworks';
-import type { FrameworkResolver } from '../src/resolution/types';
 
 describe('getApplicableFrameworks', () => {
   const pyFw: FrameworkResolver = { name: 'py', languages: ['python'], detect: () => true, resolve: () => null };
