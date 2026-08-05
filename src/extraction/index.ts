@@ -214,6 +214,20 @@ const DEFAULT_IGNORE_PATTERNS: string[] = [
   ...ANDROID_RES_TYPES.map((t) => `**/res/${t}*/`),
 ];
 
+/**
+ * A Zig package's top-level `build/` commonly contains hand-written build graph
+ * modules, while Zig's generated output lives in `.zig-cache/` and `zig-out/`.
+ * Keep only `.zig` files in that one source directory when `build.zig` proves
+ * this is a Zig package; nested and non-Zig build trees remain ignored.
+ */
+const ZIG_BUILD_HELPER_PATTERNS = [
+  '!/build/',
+  '/build/**',
+  '!/build/**/',
+  '!/build/**/*.zig',
+  '!/build/*.zig',
+];
+
 /** True if `buf` decodes as strict UTF-8 (no invalid byte sequences). */
 function isValidUtf8(buf: Buffer): boolean {
   try {
@@ -295,6 +309,9 @@ function readGitignorePatterns(giPath: string): string {
  */
 export function buildDefaultIgnore(rootDir: string): Ignore {
   const ig = ignore().add(DEFAULT_IGNORE_PATTERNS);
+  if (fs.existsSync(path.join(rootDir, 'build.zig'))) {
+    ig.add(ZIG_BUILD_HELPER_PATTERNS);
+  }
   const rootGitignore = path.join(rootDir, '.gitignore');
   if (fs.existsSync(rootGitignore)) ig.add(readGitignorePatterns(rootGitignore));
   return ig;

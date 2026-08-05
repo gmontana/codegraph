@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
+import { ToolHandler } from '../src/mcp/tools';
 import type { ExtractionResult } from '../src/types';
 import { extractFromSource } from '../src/extraction';
 import {
@@ -554,6 +555,39 @@ describe('Zig resolved project graph', () => {
       expect(work).toBeDefined();
       expect(cg.getCallers(execute!.id).map((caller) => caller.node.name)).toContain('run');
       expect(cg.getCallers(work!.id).map((caller) => caller.node.name)).toContain('run');
+    } finally {
+      cg.destroy();
+    }
+  });
+
+  it('links literal Zig build paths to their source files', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-zig-build-path-'));
+    fs.mkdirSync(path.join(tempDir, 'tools', 'dedalo'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, 'build.zig'),
+      'pub fn add(b: *std.Build) void { _ = b.path("tools/dedalo/promotion_schema.zig"); }\n',
+    );
+    fs.writeFileSync(
+      path.join(tempDir, 'tools', 'dedalo', 'promotion_schema.zig'),
+      '//! Design: owns the promotion schema.\n//! Invariants: versions only increase.\npub const schema_version = 1;\n',
+    );
+
+    const cg = CodeGraph.initSync(tempDir);
+    try {
+      await cg.indexAll();
+      expect(cg.getFileDependencies('build.zig')).toContain(
+        'tools/dedalo/promotion_schema.zig',
+      );
+      expect(cg.getFileDependents('tools/dedalo/promotion_schema.zig')).toContain(
+        'build.zig',
+      );
+      const result = await new ToolHandler(cg).execute('codegraph_explore', {
+        query: 'tools/dedalo schema_version',
+      });
+      const output = result.content[0]!.text as string;
+      expect(output).toContain('Change capsule — ownership and contracts');
+      expect(output).toContain('invariants: versions only increase.');
+      expect(output).toContain('build: build.zig');
     } finally {
       cg.destroy();
     }

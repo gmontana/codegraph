@@ -28,6 +28,7 @@ import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex } from './strip-comments';
 import { cFnPointerDispatchEdges } from './c-fnptr-synthesizer';
 import { goframeRouteEdges } from './goframe-synthesizer';
+import { zigBuildEdges } from './zig-build-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
@@ -3529,6 +3530,7 @@ const ALWAYS = (): boolean => true;
  * run because interfaceOverrideEdges reads their edges from the DB.
  */
 export const SYNTH_PASSES: SynthPassDef[] = [
+  { name: 'zigBuildEdges', gate: (has) => has('zig'), run: (_q, c, y) => zigBuildEdges(c, y) },
   { name: 'fieldEdges', gate: ALWAYS, run: (q, c, y) => fieldChannelEdges(q, c, y) },
   { name: 'closureCollEdges', gate: ALWAYS, run: (q, c, y) => closureCollectionEdges(q, c, y) },
   { name: 'emitterEdges', gate: ALWAYS, run: (_q, c, y) => eventEmitterEdges(c, y) },

@@ -178,16 +178,19 @@ export function crossesKnownFamily(a: string, b: string): boolean {
 }
 /**
  * Drop cross-language candidates from a name lookup. Two regimes:
- *  - `references` (type-usage): a type named in language X resolves to a
- *    SAME-family type, never a coincidentally same-named symbol in another
- *    language (the Android `BatteryManager` system class vs a JS one). Strict
- *    same-family filter — cross-language communication is `calls`, not refs.
+ *  - `references`, `function_ref`, and `calls`: a symbol named in language X
+ *    resolves only inside its language family. Cross-runtime calls require an
+ *    explicit bridge edge; a bare matching name is not evidence of a call.
  *  - `imports` (import binding): an `import`/`#include` never crosses two
  *    KNOWN families (TS `import React` ↮ Swift `import React`). Weaker
  *    both-known filter so `.vue`/`.svelte` (own tag) importing `.ts` survives.
  */
 function applyLanguageGate(candidates: Node[], ref: UnresolvedRef): Node[] {
-  if (ref.referenceKind === 'references' || ref.referenceKind === 'function_ref') {
+  if (
+    ref.referenceKind === 'references' ||
+    ref.referenceKind === 'function_ref' ||
+    ref.referenceKind === 'calls'
+  ) {
     return candidates.filter((c) => sameLanguageFamily(c.language, ref.language));
   }
   if (ref.referenceKind === 'imports') {

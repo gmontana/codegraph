@@ -42,6 +42,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens, extractFilePaths } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
+import { isTestFile as isIndexedTestFile } from '../search/query-utils';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -2160,16 +2161,6 @@ program
       const cg = await CodeGraph.open(projectPath);
       const maxDepth = parseInt(options.depth || '5', 10);
 
-      // Common test file patterns
-      const defaultTestPatterns = [
-        /\.spec\./,
-        /\.test\./,
-        /\/__tests__\//,
-        /(?:^|\/)tests?\//,
-        /\/e2e\//,
-        /\/spec\//,
-      ];
-
       // Custom filter pattern
       let customFilter: RegExp | null = null;
       if (options.filter) {
@@ -2184,7 +2175,7 @@ program
 
       function isTestFile(filePath: string): boolean {
         if (customFilter) return customFilter.test(filePath);
-        return defaultTestPatterns.some(p => p.test(filePath));
+        return isIndexedTestFile(filePath);
       }
 
       // BFS to find all transitive dependents of changed files, filtered to test files

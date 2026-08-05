@@ -91,6 +91,20 @@ const MAX_PATH_LENGTH = 4_096;
  */
 const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
 
+/** Longest slash-delimited query token that is an indexed file or directory. */
+function indexedQueryScope(cg: CodeGraph, query: string): string | null {
+  const files = cg.getFiles().map((file) => file.path.replace(/\\/g, '/'));
+  const scopes = new Set<string>();
+  for (const match of query.matchAll(/(?:^|[\s`"'(<\[])((?:\.\/)?[\w@.+-]+(?:\/[\w@.+-]+)+\/?)/g)) {
+    const candidate = match[1]!.replace(/^\.\//, '').replace(/\/$/, '');
+    if (candidate.startsWith('../') || candidate.length === 0) continue;
+    if (files.some((file) => file === candidate || file.startsWith(`${candidate}/`))) {
+      scopes.add(candidate);
+    }
+  }
+  return [...scopes].sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
 /**
  * Node kinds that contain other symbols. For these, `codegraph_node` with
  * `includeCode=true` returns a structural outline (member names + signatures
@@ -1927,6 +1941,13 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'zig-build-path') {
+      return {
+        label: `literal Zig build source dependency`,
+        compact: `build source: ${String(m.path ?? '')}`,
+        registeredAt,
+      };
+    }
     // Generic fallback for any other synthesizer (redux-thunk, gin-middleware-chain,
     // flutter-build, …): a synthesized hop must never read as a bare static `calls`.
     // It's a dynamic-dispatch bridge — label it as one and keep its wiring site.
@@ -2489,6 +2510,42 @@ export class ToolHandler {
     ].join('\n');
   }
 
+  /** Compact edit-time ownership and invariant evidence for Zig entry nodes. */
+  private buildChangeCapsule(cg: CodeGraph, subgraph: Subgraph): string {
+    const roots = subgraph.roots
+      .map((id) => subgraph.nodes.get(id))
+      .filter((node): node is Node => !!node && node.language === 'zig' && node.kind !== 'file')
+      .slice(0, 4);
+    if (roots.length === 0) return '';
+
+    const files = new Set(cg.getFiles().map((file) => file.path.replace(/\\/g, '/')));
+    const entries: string[] = [];
+    for (const root of roots) {
+      const sourcePath = resolvePath(cg.getProjectRoot(), root.filePath);
+      let source = '';
+      try { source = readFileSync(sourcePath, 'utf8'); } catch { /* indexed source may have moved */ }
+      const design = source.split('\n').slice(0, 24)
+        .map((line) => /^\/\/!\s*(Design|Invariants):\s*(.+)$/.exec(line))
+        .filter((match): match is RegExpExecArray => !!match)
+        .slice(0, 2)
+        .map((match) => `${match[1]!.toLowerCase()}: ${match[2]!.trim()}`);
+      const dir = root.filePath.includes('/') ? root.filePath.slice(0, root.filePath.lastIndexOf('/')) : '.';
+      const authority = [`${dir}/SPEC.md`, `${dir}/ARCHITECTURE.md`].find((file) => files.has(file));
+      const fileNode = cg.getNodesInFile(root.filePath).find((node) => node.kind === 'file');
+      const buildFiles = fileNode
+        ? cg.getIncomingEdges(fileNode.id)
+          .filter((edge) => edge.metadata?.synthesizedBy === 'zig-build-path')
+          .map((edge) => cg.getNode(edge.source)?.filePath)
+          .filter((file): file is string => !!file)
+        : [];
+      const facts = [`owner: ${dir}`, ...design];
+      if (authority) facts.push(`authority: ${authority}`);
+      if (buildFiles.length > 0) facts.push(`build: ${[...new Set(buildFiles)].slice(0, 2).join(', ')}`);
+      entries.push(`- \`${root.name}\` (${root.filePath}:${root.startLine}) — ${facts.join('; ')}`);
+    }
+    return ['**Change capsule — ownership and contracts**', '', ...entries, ''].join('\n');
+  }
+
   /**
    * Test-coverage note for a blast-radius entry whose DIRECT callers include no
    * test file. A helper called only by production code can still be exercised
@@ -2625,6 +2682,9 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
+    const pathScope = indexedQueryScope(cg, query);
+    const inPathScope = (filePath: string): boolean =>
+      !pathScope || filePath === pathScope || filePath.startsWith(`${pathScope}/`);
 
     // Resolve adaptive output budget from project size. Falls back to the
     // largest-tier defaults if stats aren't available, which preserves
@@ -2768,6 +2828,7 @@ export class ToolHandler {
         const isQual = /[.\/]|::/.test(t);
         const raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
         let cands = raw
+          .filter((n) => inPathScope(n.filePath))
           .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath))
           .sort((a, b) => (bodyLines(b) > 1 ? 1 : 0) - (bodyLines(a) > 1 ? 1 : 0) || bodyLines(b) - bodyLines(a));
         // Field-name seeding fallback (#1196): a camelCase token that names NO
@@ -2785,7 +2846,7 @@ export class ToolHandler {
               kinds: ['function', 'method', 'component'],
               limit: 60,
             })
-            .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath))
+            .filter((n) => inPathScope(n.filePath) && CALLABLE.has(n.kind) && !isTestPath(n.filePath))
             .filter((n) => {
               const idx = n.name.toLowerCase().indexOf(lcToken);
               if (idx < 0) return false;
@@ -2837,6 +2898,19 @@ export class ToolHandler {
           namedSeedIds.add(n.id);
         }
         for (const n of tierPicks) tierSeedIds.add(n.id);
+      }
+    }
+
+    if (pathScope) {
+      for (const [id, node] of subgraph.nodes) {
+        if (!inPathScope(node.filePath)) subgraph.nodes.delete(id);
+      }
+      subgraph.edges = subgraph.edges.filter(
+        (edge) => subgraph.nodes.has(edge.source) && subgraph.nodes.has(edge.target),
+      );
+      subgraph.roots = subgraph.roots.filter((id) => subgraph.nodes.has(id));
+      if (subgraph.nodes.size === 0) {
+        return this.textResult(`No relevant code found within indexed scope "${pathScope}" for "${query}"`);
       }
     }
 
@@ -3143,6 +3217,7 @@ export class ToolHandler {
     // Step 3: Build relationship map
     const lines: string[] = [
       `**Exploration: ${query}**`,
+      ...(pathScope ? [`**Indexed scope: ${pathScope}**`] : []),
       '',
       // Curated summary — filled in after the source loop (see below). We do NOT
       // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
@@ -3154,6 +3229,9 @@ export class ToolHandler {
       '',
     ];
     const summaryLineIdx = 2;
+
+    const changeCapsule = this.buildChangeCapsule(cg, subgraph);
+    if (changeCapsule) lines.push(changeCapsule);
 
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent

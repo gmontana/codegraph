@@ -83,6 +83,45 @@ describe('Resolution Module', () => {
       expect(result?.resolvedBy).toBe('exact-match');
     });
 
+    it('does not infer calls across language runtimes from a shared name', () => {
+      const zigInsert: Node = {
+        id: 'function:cache.zig:insert:4',
+        kind: 'function',
+        name: 'insert',
+        qualifiedName: 'cache.zig::insert',
+        filePath: 'src/cache.zig',
+        language: 'zig',
+        startLine: 4,
+        endLine: 8,
+        startColumn: 0,
+        endColumn: 0,
+        updatedAt: Date.now(),
+      };
+      const context: ResolutionContext = {
+        getNodesInFile: () => [],
+        getNodesByName: (name) => name === 'insert' ? [zigInsert] : [],
+        getNodesByQualifiedName: () => [],
+        getNodesByKind: () => [],
+        fileExists: () => true,
+        readFile: () => null,
+        getProjectRoot: () => '/test',
+        getAllFiles: () => ['campaign.py', 'src/cache.zig'],
+        getNodesByLowerName: () => [zigInsert],
+        getImportMappings: () => [],
+      };
+      const ref: UnresolvedRef = {
+        fromNodeId: 'function:campaign.py:run:1',
+        referenceName: 'insert',
+        referenceKind: 'calls',
+        line: 2,
+        column: 4,
+        filePath: 'campaign.py',
+        language: 'python',
+      };
+
+      expect(matchReference(ref, context)).toBeNull();
+    });
+
     it('should resolve Erlang -behaviour refs only to module namespaces', () => {
       // On emqx, `-behaviour(supervisor)` (OTP behaviour, not in the repo)
       // fell through to bare-name matching and resolved to a

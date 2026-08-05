@@ -6935,6 +6935,21 @@ describe('Directory Exclusion', () => {
     expect(files.every((f) => !f.includes('.git'))).toBe(true);
   });
 
+  it('indexes only Zig sources from a Zig package build directory', () => {
+    fs.mkdirSync(path.join(tempDir, 'build', 'tooling'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'build.zig'), 'pub fn build() void {}');
+    fs.writeFileSync(path.join(tempDir, 'build', 'tests.zig'), 'pub fn add() void {}');
+    fs.writeFileSync(path.join(tempDir, 'build', 'tooling', 'rl.zig'), 'pub fn add() void {}');
+    fs.writeFileSync(path.join(tempDir, 'build', 'generated.js'), 'export const noise = true;');
+
+    const files = scanDirectory(tempDir);
+
+    expect(files).toContain('build/tests.zig');
+    expect(files).toContain('build/tooling/rl.zig');
+    expect(files).not.toContain('build/generated.js');
+    expect(buildScopeIgnore(tempDir).ignores('build/tests.zig')).toBe(false);
+  });
+
   it('should return forward-slash paths on all platforms', () => {
     const srcDir = path.join(tempDir, 'src', 'components');
     fs.mkdirSync(srcDir, { recursive: true });

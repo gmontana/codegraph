@@ -48,6 +48,15 @@ describe('codegraph affected — input path normalization (#825)', () => {
       path.join(tempDir, 'tests/integration.ts'),
       "import { util } from '../src/util';\ntest('integration', () => util(1));\n",
     );
+    fs.mkdirSync(path.join(tempDir, 'tools/dedalo'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, 'tools/dedalo/campaign_evidence.py'),
+      'def campaign_evidence():\n    return True\n',
+    );
+    fs.writeFileSync(
+      path.join(tempDir, 'tools/dedalo/campaign_evidence_test.py'),
+      'def check():\n    return campaign_evidence()\n',
+    );
     const cg = CodeGraph.initSync(tempDir);
     await cg.indexAll();
     cg.close();
@@ -64,5 +73,11 @@ describe('codegraph affected — input path normalization (#825)', () => {
     // Both of these returned [] before the normalization fix.
     expect(affected(tempDir, './src/util.ts')).toEqual(expected);
     expect(affected(tempDir, path.join(tempDir, 'src/util.ts'))).toEqual(expected);
+  });
+
+  it('recognizes Python suffix-style tests outside a tests directory', () => {
+    expect(affected(tempDir, 'tools/dedalo/campaign_evidence.py')).toEqual([
+      'tools/dedalo/campaign_evidence_test.py',
+    ]);
   });
 });
