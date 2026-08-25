@@ -17,6 +17,9 @@ import { geminiTarget } from './gemini';
 import { antigravityTarget } from './antigravity';
 import { kiroTarget } from './kiro';
 import { piTarget } from './pi';
+import { copilotVscodeTarget } from './copilot-vscode';
+import { copilotCliTarget } from './copilot-cli';
+import { copilotJetbrainsTarget } from './copilot-jetbrains';
 
 export const ALL_TARGETS: readonly AgentTarget[] = Object.freeze([
   claudeTarget,
@@ -28,6 +31,9 @@ export const ALL_TARGETS: readonly AgentTarget[] = Object.freeze([
   antigravityTarget,
   kiroTarget,
   piTarget,
+  copilotVscodeTarget,
+  copilotCliTarget,
+  copilotJetbrainsTarget,
 ]);
 
 export function getTarget(id: string): AgentTarget | undefined {

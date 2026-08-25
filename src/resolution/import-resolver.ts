@@ -27,7 +27,7 @@ const EXTENSION_RESOLUTION: Record<string, string[]> = {
   // module-entry convention, hit when a bare workspace import ("data") is
   // rewritten to the member's directory; lowercase variants for safety.
   arkts: ['.ets', '.ts', '.d.ts', '.js', '/Index.ets', '/index.ets', '/index.ts', '/index.js'],
-  javascript: ['.js', '.jsx', '.mjs', '.cjs', '/index.js', '/index.jsx'],
+  javascript: ['.js', '.jsx', '.mjs', '.cjs', '.xsjs', '.xsjslib', '/index.js', '/index.jsx'],
   tsx: ['.tsx', '.ts', '.d.ts', '.js', '.jsx', '/index.tsx', '/index.ts', '/index.js'],
   jsx: ['.jsx', '.js', '/index.jsx', '/index.js'],
   // SFC consumers import plain TS/JS, sibling components, and barrels
@@ -2072,6 +2072,7 @@ function resolveRustPathReference(
       n.name === leaf &&
       (n.kind === 'function' ||
         n.kind === 'struct' ||
+        n.kind === 'union' ||
         n.kind === 'enum' ||
         n.kind === 'trait' ||
         n.kind === 'type_alias' ||
@@ -2436,7 +2437,7 @@ function findExportedSymbolWalk(
 
 /** Node kinds that own static members reachable as `Container.member`. */
 const STATIC_MEMBER_CONTAINERS = new Set<Node['kind']>([
-  'class', 'struct', 'interface', 'enum', 'trait', 'protocol',
+  'class', 'struct', 'union', 'interface', 'enum', 'trait', 'protocol',
 ]);
 
 /**
